@@ -1,0 +1,6 @@
+pandas
+numpy
+scipy
+lifelines
+scikit-learn
+pyreadstat
