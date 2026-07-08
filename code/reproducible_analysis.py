@@ -24,6 +24,7 @@ Columns:
   age             age at diagnosis (years)
   stage34         stage III-IV vs I-II ; stage4 = stage IV ; stage_ord = 0..IV
   TN              triple-negative subtype ; grade3 = histological grade 3
+  her2pos         HER2-positive surrogate subtype (1/0)  [for sensitivity analysis]
   RT              adjuvant radiotherapy ; ki67 (%) ; ki67hi = Ki67 > 19%
   size_mm         tumour size (mm)
 Covariate values recovered from source documents are already integrated
@@ -123,6 +124,19 @@ c, s = cox(d, ["TN", "stage34", "grade3", "RT"], "t_os", "ev_os")
 z = proportional_hazard_test(c, s, time_transform="rank")
 for v in ["TN", "stage34", "grade3", "RT"]:
     print("    %-8s p=%.3f" % (v, z.summary.loc[v, "p"]))
+# stage III-IV proportional-hazards violation: time-split at 3 years
+_sp = []
+for _, _r in d.dropna(subset=["t_os", "ev_os", "stage34", "TN", "RT"]).iterrows():
+    _t, _e = _r["t_os"], int(_r["ev_os"])
+    if _t <= 3:
+        _sp.append((0, _t, _e, _r.stage34, _r.TN, _r.RT))
+    else:
+        _sp.append((0, 3, 0, _r.stage34, _r.TN, _r.RT))
+        _sp.append((3, _t, _e, _r.stage34, _r.TN, _r.RT))
+_sp = pd.DataFrame(_sp, columns=["start", "stop", "ev", "stage34", "TN", "RT"])
+for _lab, _seg in [("0-3y", _sp[_sp.start == 0]), (">3y", _sp[_sp.start == 3])]:
+    _ct = CoxPHFitter().fit(_seg, "stop", "ev", entry_col="start")
+    print("    stage III-IV %-4s HR %.2f" % (_lab, np.exp(_ct.params_["stage34"])))
 
 # ---- Section 3.8 — power and additional sensitivity analyses ----
 print("\n[Section 3.8 — power and sensitivity]")
@@ -136,12 +150,24 @@ print("  Schoenfeld p for NACT (adjusted): %.3f" % proportional_hazard_test(c, s
 c2, _ = cox(d[d['stage4'] == 0], ["neo", "age", "stage34"], "t_os", "ev_os")
 print("  Excluding stage IV: NACT %s" % hr(c2, "neo"))
 print("  Deaths: %d total, %d breast-cancer-specific" % (int(d['ev_os'].sum()), int(d['ev_bc'].sum())))
+cs0, _ = cox(d, ["neo"], "t_os", "ev_bc")
 cs1, _ = cox(d, ["neo", "age", "stage34"], "t_os", "ev_bc")
+cs5, _ = cox(d, ["neo", "age", "stage34", "grade3", "TN"], "t_os", "ev_bc")
 cs2, _ = cox(d, ["neo", "age", "stage_ord", "size_mm"], "t_os", "ev_bc")
-print("  Cause-specific NACT, binary stage:       %s" % hr(cs1, "neo"))
-print("  Cause-specific NACT, ordinal stage+size: %s" % hr(cs2, "neo"))
+print("  Cause-specific NACT, unadjusted (M1):        %s" % hr(cs0, "neo"))
+print("  Cause-specific NACT, +age+binary stage (M3): %s" % hr(cs1, "neo"))
+print("  Cause-specific NACT, +grade+subtype (M5):    %s" % hr(cs5, "neo"))
+print("  Cause-specific NACT, ordinal stage+size:     %s (attenuated -> residual confounding)" % hr(cs2, "neo"))
 ck, _ = cox(d, ["TN", "stage34", "grade3", "RT", "ki67hi"], "t_os", "ev_os")
 print("  Ki67>19%% in multivariable model: %s" % hr(ck, "ki67hi"))
+if "her2pos" in d.columns:
+    hn = d[d["her2pos"] == 0]
+    print("  [HER2-negative sensitivity, excluding %d HER2+ patients]" % int(d["her2pos"].sum()))
+    chn, _ = cox(hn, ["TN", "stage34", "grade3", "RT"], "t_os", "ev_os")
+    for v in ["TN", "stage34", "grade3", "RT"]:
+        print("    %-8s %s" % (v, hr(chn, v)))
+    cnn, _ = cox(hn, ["neo", "age", "stage34"], "t_os", "ev_os")
+    print("    stage-adjusted NACT: %s" % hr(cnn, "neo"))
 
 # ---- E-value (VanderWeele & Ding, 2017) ----
 def evalue(h):
