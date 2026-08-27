@@ -174,8 +174,8 @@ if "her2pos" in d.columns:
 print("\n[Revision 2 — landmark radiotherapy, common-sample progressive models,")
 print(" MI-based full adjustment, time-dependent stability, time origin]")
 # (a) 12- and 6-month landmark analyses for radiotherapy
-for L, lab in ((1.0, "12m"), (0.5, "6m")):
-    lm = d[d["t_os"] > L].copy(); lm["t_lm"] = lm["t_os"] - L
+for LM, lab in ((1.0, "12m"), (0.5, "6m")):
+        lm = d[d["t_os"] > LM].copy(); lm["t_lm"] = lm["t_os"] - LM
     cl, _ = cox(lm, ["RT", "TN", "stage34"], "t_lm", "ev_os")
     print("  Landmark %s: RT %s (n=%d)" % (lab, hr(cl, "RT"), len(lm.dropna(subset=["RT","TN","stage34"]))))
 # (b) progressive models within the common known-grade subset (n=392)
