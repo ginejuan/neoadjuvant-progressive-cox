@@ -27,17 +27,18 @@ Columns:
   her2pos         HER2-positive surrogate subtype (1/0)  [for sensitivity analysis]
   RT              adjuvant radiotherapy ; ki67 (%) ; ki67hi = Ki67 > 19%
   size_mm         tumour size (mm)
+  delay_dx_days   biopsy-to-surgery interval (days)  [for time-origin sensitivity]
 Covariate values recovered from source documents are already integrated
 (Supplementary Figure S1).
 
 REQUIREMENTS
 ------------
-python >= 3.10 ; pandas ; numpy ; scipy ; lifelines
-  pip install pandas numpy scipy lifelines
+python >= 3.10 ; pandas ; numpy ; scipy ; lifelines ; scikit-learn
+  pip install pandas numpy scipy lifelines scikit-learn
 
 USAGE
 -----
-  python Code_S1_reproducible_analysis.py
+  python reproducible_analysis.py
 ================================================================================
 """
 import numpy as np
@@ -168,6 +169,53 @@ if "her2pos" in d.columns:
         print("    %-8s %s" % (v, hr(chn, v)))
     cnn, _ = cox(hn, ["neo", "age", "stage34"], "t_os", "ev_os")
     print("    stage-adjusted NACT: %s" % hr(cnn, "neo"))
+
+# ---- Revision 2 addendum: analyses requested by the reviewers ----
+print("\n[Revision 2 — landmark radiotherapy, common-sample progressive models,")
+print(" MI-based full adjustment, time-dependent stability, time origin]")
+# (a) 12- and 6-month landmark analyses for radiotherapy
+for L, lab in ((1.0, "12m"), (0.5, "6m")):
+    lm = d[d["t_os"] > L].copy(); lm["t_lm"] = lm["t_os"] - L
+    cl, _ = cox(lm, ["RT", "TN", "stage34"], "t_lm", "ev_os")
+    print("  Landmark %s: RT %s (n=%d)" % (lab, hr(cl, "RT"), len(lm.dropna(subset=["RT","TN","stage34"]))))
+# (b) progressive models within the common known-grade subset (n=392)
+cs = d.dropna(subset=["grade3"]).copy()
+print("  Common subset n=%d, deaths=%d" % (len(cs), int(cs["ev_os"].sum())))
+for cols, lab in ((["neo"], "M1"), (["neo","age"], "M2"), (["neo","age","stage34"], "M3"),
+                  (["neo","age","stage34","grade3"], "M4"), (["neo","age","stage34","grade3","TN"], "M5")):
+    cc, _ = cox(cs, cols, "t_os", "ev_os")
+    print("    %s: neo %s" % (lab, hr(cc, "neo")))
+# (c) fully adjusted model with grade multiply imputed (Rubin's rules, 20 imputations)
+from sklearn.experimental import enable_iterative_imputer
+from sklearn.impute import IterativeImputer
+X = d[["neo","age","stage34","TN","RT","ki67","size_mm","grade3","ev_os","t_os"]].copy()
+bs, ses = [], []
+for m in range(20):
+    imp = IterativeImputer(random_state=m, max_iter=10, sample_posterior=True)
+    Xi = pd.DataFrame(imp.fit_transform(X), columns=X.columns)
+    Xi["grade3"] = (Xi["grade3"] > 0.5).astype(int)
+    cf = CoxPHFitter().fit(Xi[["t_os","ev_os","neo","age","stage34","grade3","TN"]], "t_os", "ev_os")
+    bs.append(cf.params_["neo"]); ses.append(cf.standard_errors_["neo"])
+qbar = np.mean(bs); T = np.mean(np.square(ses)) + (1 + 1/20) * np.var(bs, ddof=1); se = np.sqrt(T)
+print("    M5 (grade MI): neo HR %.2f (%.2f-%.2f)" % (np.exp(qbar), np.exp(qbar-1.96*se), np.exp(qbar+1.96*se)))
+# (d) NACT stability with time-dependent stage and TN (split at 3 years)
+recs = []
+for _, r in d.dropna(subset=["t_os"]).iterrows():
+    t, e = r["t_os"], int(r["ev_os"])
+    if t <= 3: recs.append((0, t, e, r["neo"], r["age"], r["stage34"], 0, r["TN"], 0))
+    else:
+        recs.append((0, 3, 0, r["neo"], r["age"], r["stage34"], 0, r["TN"], 0))
+        recs.append((3, t, e, r["neo"], r["age"], 0, r["stage34"], 0, r["TN"]))
+sp = pd.DataFrame(recs, columns=["start","stop","ev","neo","age","st_e","st_l","tn_e","tn_l"])
+ctv = CoxPHFitter().fit(sp, "stop", "ev", entry_col="start")
+print("    neo (time-dependent stage/TN): HR %.2f" % np.exp(ctv.params_["neo"]))
+# (e) time origin at diagnosis (biopsy): t_dx = t_os + biopsy-to-surgery interval
+dx = d[d["delay_dx_days"].notna() & (d["delay_dx_days"] >= 0)].copy()
+dx["t_dx"] = dx["t_os"] + dx["delay_dx_days"] / 365.25
+c1, _ = cox(dx, ["neo","age","stage34"], "t_dx", "ev_os")
+c2, _ = cox(dx, ["neo","age","stage34"], "t_os", "ev_os")
+print("    Time origin diagnosis: neo %s (n=%d) | surgery origin, same subset: %s"
+      % (hr(c1, "neo"), len(dx), hr(c2, "neo")))
 
 # ---- E-value (VanderWeele & Ding, 2017) ----
 def evalue(h):
